@@ -8,86 +8,106 @@ async function getData(url) {
         },
         redirect: 'follow',
     });
-    return response.json();
+
+    const result = await response.json(); // сделал именно таким образом, чтобы достать после message из ответа в случае ошибки
+
+    if (response.ok) {
+        return result;
+    }
+
+    throw result.message;
 }
 
 // для преобразования базы в словарь вида caa3/данные страны. Используем для того, чтобы не бегать за странами на бэк
 async function loadCountriesData() {
     const countries = await getData(`${URL}/all?fields=name&fields=cca3&fields=area`);
+
+    if (countries.message) {
+        throw new Error(countries.message);
+    }
+
     return countries.reduce((result, country) => {
         result[country.cca3] = country;
         return result;
     }, {});
 }
 
-async function getBorders(code, requestData) {
-    try {
-        const borders = await getData(`${URL}/alpha/${code}?fields=borders`);
+async function getBorders(code) {
+    const borders = await getData(`${URL}/alphaaaaaa/${code}?fields=borders`);
 
-        if (!borders) {
-            throw new Error(borders.message); // попадёт в catch если произошла ошибка
-        }
-        return borders.borders;
-    } catch (err) {
-        requestData.error = true;
-        return err;
+    if (!borders.ok && borders.message) {
+        throw new Error(borders.message); // попадёт в catch если произошла ошибка
     }
+
+    return borders.borders;
 }
 
-// тут весь мозг данной работы, ищем маршруты либо записываем ответы с ошибками
-async function search(searchData, paths, requestData) {
-    // обернём всё в try/catch для безопасности
-    try {
-        for await (const path of paths) {
-            const rootPath = path.path.at(-1);
+// головная функция
+async function search(from, to) {
+    const searchData = {
+        resultPaths: [], // результат отработки нашей функции, его мы будем парсить в дальнейшем
+        overLimit: false, // если страны слишком далеко друг от друга - мы выведем в ответ информацию об этом
+        message: '',
+        requestData: { requestCounter: 0, error: false }, // счётчик запросов и флаг ошибки
+    };
 
-            // если мы находим наш путь
-            if (rootPath === searchData.end) {
-                searchData.resultPaths.push(path.path);
+    const paths = [[from]];
 
-                // теперь поищем другие варианты, если они есть (тоже самое количество шагов)
-                for (let i = paths.indexOf(path) + 1; i < paths.length; i++) {
-                    if (paths[i].step === path.step && paths[i].path.at(-1) === searchData.end) {
-                        searchData.resultPaths.push(paths[i].path);
-                    }
-                }
-                break;
-            } else if (path.step > 10) {
-                searchData.overLimit = true;
-                return 'Очень далеко... давай на самолёте?)';
-            } else {
-                const borders = await getBorders(rootPath, requestData);
-                requestData.requestCounter += 1; // увеличиваем счётчик запросов
-
-                if (requestData.error) {
-                    return borders;
-                }
-
-                // фильтруем страны, чтобы не идти по кругу
-                const nextBorders = borders.filter((border) => {
-                    for (let i = 0; i < paths.length; i++) {
-                        if (paths[i].path.at(-1) === border) {
-                            if (paths[i].step <= path.step) {
-                                return false;
-                            }
+    for await (const path of paths) {
+        const rootPath = path.at(-1);
+        // если мы находим наш путь
+        if (rootPath === to) {
+            searchData.resultPaths.push(path);
+            // теперь поищем другие варианты, если они есть (тоже самое количество шагов)
+            const pathNextIndex = paths.indexOf(path) + 1;
+            if (paths[pathNextIndex]) {
+                for (let i = pathNextIndex; i < paths.length; i++) {
+                    if (paths[i].length === path.length) {
+                        if (paths[i].at(-1) === to) {
+                            searchData.resultPaths.push(paths[i]);
                         }
+                    } else {
+                        break;
                     }
-                    return true;
-                });
-
-                nextBorders.forEach((border) => {
-                    const newPath = {};
-                    newPath.path = path.path.concat(border);
-                    newPath.step = path.step + 1;
-                    paths.push(newPath); // вот тут спрятано увеличения стека, путём мутирования paths
-                });
+                }
             }
+            return searchData;
         }
-        return searchData.resultPaths;
-    } catch (err) {
-        searchData.error = true;
-        return err;
+        if (path.length > 10) {
+            searchData.overLimit = true;
+            searchData.message = 'Очень далеко... давай на самолёте?)';
+            return searchData;
+        }
+        let borders;
+
+        try {
+            borders = await getBorders(rootPath);
+        } catch (err) {
+            searchData.message = err;
+            searchData.requestData.error = true;
+            return searchData;
+        }
+
+        searchData.requestData.requestCounter += 1;
+
+        // фильтруем страны, чтобы не идти по кругу
+        const nextBorders = borders.filter((border) => {
+            for (let i = 0; i < paths.length; i++) {
+                if (paths[i].at(-1) === border && paths[i].length <= path.length) {
+                    return false;
+                }
+            }
+            return true;
+        });
+
+        nextBorders.forEach((border) => {
+            const newPath = path.concat(border);
+            paths.push(newPath); // вот тут спрятано увеличения стека, путём мутирования paths
+        });
     }
+
+    searchData.message = 'К сожалению - ничего не нашлось :(';
+    return searchData;
 }
 
 const form = document.getElementById('form');
@@ -108,8 +128,23 @@ const tooggleForm = (bollean) => {
     tooggleForm(true); // дизейблим кнопки во время запроса
 
     output.textContent = 'Loading…';
-    const countriesData = await loadCountriesData();
-    output.textContent = '';
+
+    let countriesData; // вынес в отдельные константы т.к. дальше по коду будет использоваться (т.е. нельзя в {})
+    let errorLoading;
+
+    try {
+        countriesData = await loadCountriesData();
+    } catch (err) {
+        errorLoading = true;
+    }
+
+    // COMMENT. Как по мне, тут лучше использовать тернарник, на почему линтер его запрещает?
+    // или всё же это плохая практика?
+    if (errorLoading) {
+        output.textContent = 'Упс, произошла ошибка при обращении к серверу, пожалуйста зайдите позже';
+    } else {
+        output.textContent = '';
+    }
 
     // немного поменял код, чтобы дважды не делать Object.keys, ключи ещё понадобятся
     const countryCodes = Object.keys(countriesData);
@@ -145,40 +180,25 @@ const tooggleForm = (bollean) => {
 
                 output.textContent = 'Ищем оптимальные маршруты, подождите пожалуйста!';
 
-                const searchData = {
-                    start: getCountryCode(fromCountry.value),
-                    end: getCountryCode(toCountry.value),
-                    resultPaths: [], // результат отработки нашей функции, его мы будем парсить в дальнейшем
-                    overLimit: false, // если страны слишком далеко друг от друга - мы выведем в ответ информацию об этом
-                    error: false, // если возникнет ошибка - поменяем данный флаг и выведем в output информацию об этом
-                };
+                const [from, to] = [getCountryCode(fromCountry.value), getCountryCode(toCountry.value)];
 
-                const paths = [{ path: [searchData.start], step: 1 }]; // это будет массив различных версий пути, ведь их может быть несколько
+                const resultOutput = await search(from, to); // вызов главной функции
 
-                const requestData = {
-                    requestCounter: 0, // наш счётчик запросов OK
-                    error: false, // если возникнет ошибка во время выполнения запросов - выведем её
-                };
-
-                const resultOutput = await search(searchData, paths, requestData); // вызов главной функции
-
-                if (requestData.error) {
-                    output.textContent = `Произошла ошибка при обращении к серверу ${resultOutput}`;
-                } else if (searchData.error) {
-                    output.textContent = `Произошла неизвестная ошибка, уже фиксим! ${resultOutput}`;
-                } else if (searchData.overLimit) {
-                    output.textContent = resultOutput;
-                } else if (searchData.resultPaths.length) {
+                if (resultOutput.requestData.error) {
+                    output.textContent = `Произошла ошибка при обращении к серверу ${resultOutput.message}`;
+                } else if (resultOutput.overLimit) {
+                    output.textContent = resultOutput.message;
+                } else if (resultOutput.resultPaths.length) {
                     output.textContent = '';
-                    resultOutput.forEach((path) => {
+                    resultOutput.resultPaths.forEach((path) => {
                         path.forEach((country, i) => {
                             path[i] = countriesData[country].name.common;
                         });
                         output.innerHTML += `${path.join(' → ')}<br/>`;
                     });
-                    output.innerHTML += `Количество запросов к API: ${requestData.requestCounter}`;
+                    output.innerHTML += `Количество запросов к API: ${resultOutput.requestData.requestCounter}`;
                 } else {
-                    output.textContent = 'Путь не найден:(';
+                    output.textContent = resultOutput.message;
                 }
 
                 tooggleForm(false);
