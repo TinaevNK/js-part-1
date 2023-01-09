@@ -9,22 +9,18 @@ async function getData(url) {
         redirect: 'follow',
     });
 
-    const result = await response.json(); // сделал именно таким образом, чтобы достать после message из ответа в случае ошибки
+    const result = await response.json();
 
     if (response.ok) {
         return result;
     }
 
-    throw result.message;
+    throw result;
 }
 
 // для преобразования базы в словарь вида caa3/данные страны. Используем для того, чтобы не бегать за странами на бэк
 async function loadCountriesData() {
     const countries = await getData(`${URL}/all?fields=name&fields=cca3&fields=area`);
-
-    if (countries.message) {
-        throw new Error(countries.message);
-    }
 
     return countries.reduce((result, country) => {
         result[country.cca3] = country;
@@ -34,10 +30,6 @@ async function loadCountriesData() {
 
 async function getBorders(code) {
     const borders = await getData(`${URL}/alpha/${code}?fields=borders`);
-
-    if (!borders.ok && borders.message) {
-        throw new Error(borders.message); // попадёт в catch если произошла ошибка
-    }
 
     return borders.borders;
 }
@@ -83,7 +75,7 @@ async function search(from, to) {
         try {
             borders = await getBorders(rootPath);
         } catch (err) {
-            searchData.message = err;
+            searchData.message = err.message;
             searchData.requestData.error = true;
             return searchData;
         }
@@ -130,20 +122,13 @@ const tooggleForm = (bollean) => {
     output.textContent = 'Loading…';
 
     let countriesData; // вынес в отдельные константы т.к. дальше по коду будет использоваться (т.е. нельзя в {})
-    let errorLoading;
 
     try {
         countriesData = await loadCountriesData();
-    } catch (err) {
-        errorLoading = true;
-    }
-
-    // COMMENT. Как по мне, тут лучше использовать тернарник, на почему линтер его запрещает?
-    // или всё же это плохая практика?
-    if (errorLoading) {
-        output.textContent = 'Упс, произошла ошибка при обращении к серверу, пожалуйста зайдите позже';
-    } else {
         output.textContent = '';
+    } catch (err) {
+        output.textContent = `Упс, произошла ошибка при обращении к серверу ${err.message}`;
+        return;
     }
 
     // немного поменял код, чтобы дважды не делать Object.keys, ключи ещё понадобятся
