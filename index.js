@@ -33,7 +33,7 @@ async function loadCountriesData() {
 }
 
 async function getBorders(code) {
-    const borders = await getData(`${URL}/alphaaaaaa/${code}?fields=borders`);
+    const borders = await getData(`${URL}/alpha/${code}?fields=borders`);
 
     if (!borders.ok && borders.message) {
         throw new Error(borders.message); // попадёт в catch если произошла ошибка
