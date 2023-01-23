@@ -1,5 +1,6 @@
-const URL = 'https://restcountries.com/v3.1';
+'use strict';
 
+const API_URL = 'https://restcountries.com/v3.1';
 async function getData(url) {
     const response = await fetch(url, {
         method: 'GET',
@@ -8,43 +9,33 @@ async function getData(url) {
         },
         redirect: 'follow',
     });
-
     const result = await response.json();
-
     if (response.ok) {
         return result;
     }
-
     throw result;
 }
-
 // для преобразования базы в словарь вида caa3/данные страны. Используем для того, чтобы не бегать за странами на бэк
 async function loadCountriesData() {
-    const countries = await getData(`${URL}/all?fields=name&fields=cca3&fields=area`);
-
+    const countries = await getData(`${API_URL}/all?fields=name&fields=cca3&fields=area`);
     return countries.reduce((result, country) => {
         result[country.cca3] = country;
         return result;
     }, {});
 }
-
 async function getBorders(code) {
-    const borders = await getData(`${URL}/alpha/${code}?fields=borders`);
-
+    const borders = await getData(`${API_URL}/alpha/${code}?fields=borders`);
     return borders.borders;
 }
-
 // головная функция
 async function search(from, to) {
     const searchData = {
-        resultPaths: [], // результат отработки нашей функции, его мы будем парсить в дальнейшем
-        overLimit: false, // если страны слишком далеко друг от друга - мы выведем в ответ информацию об этом
+        resultPaths: [],
+        overLimit: false,
         message: '',
         requestData: { requestCounter: 0, error: false }, // счётчик запросов и флаг ошибки
     };
-
     const paths = [[from]];
-
     for await (const path of paths) {
         const rootPath = path.at(-1);
         // если мы находим наш путь
@@ -71,7 +62,6 @@ async function search(from, to) {
             return searchData;
         }
         let borders;
-
         try {
             borders = await getBorders(rootPath);
         } catch (err) {
@@ -79,9 +69,7 @@ async function search(from, to) {
             searchData.requestData.error = true;
             return searchData;
         }
-
         searchData.requestData.requestCounter += 1;
-
         // фильтруем страны, чтобы не идти по кругу
         const nextBorders = borders.filter((border) => {
             for (let i = 0; i < paths.length; i++) {
@@ -91,38 +79,30 @@ async function search(from, to) {
             }
             return true;
         });
-
         nextBorders.forEach((border) => {
             const newPath = path.concat(border);
             paths.push(newPath); // вот тут спрятано увеличения стека, путём мутирования paths
         });
     }
-
     searchData.message = 'К сожалению - ничего не нашлось :(';
     return searchData;
 }
-
 const form = document.getElementById('form');
 const fromCountry = document.getElementById('fromCountry');
 const toCountry = document.getElementById('toCountry');
 const countriesList = document.getElementById('countriesList');
 const submit = document.getElementById('submit');
 const output = document.getElementById('output');
-
 // функция для блокировки/разблокировке полей ввода и кнопки сабмита
 const tooggleForm = (bollean) => {
     fromCountry.disabled = bollean;
     toCountry.disabled = bollean;
     submit.disabled = bollean;
 };
-
 (async () => {
     tooggleForm(true); // дизейблим кнопки во время запроса
-
     output.textContent = 'Loading…';
-
     let countriesData; // вынес в отдельные константы т.к. дальше по коду будет использоваться (т.е. нельзя в {})
-
     try {
         countriesData = await loadCountriesData();
         output.textContent = '';
@@ -130,10 +110,8 @@ const tooggleForm = (bollean) => {
         output.textContent = `Упс, произошла ошибка при обращении к серверу ${err.message}`;
         return;
     }
-
     // немного поменял код, чтобы дважды не делать Object.keys, ключи ещё понадобятся
     const countryCodes = Object.keys(countriesData);
-
     // Заполняем список стран для подсказки в инпутах
     countryCodes
         .sort((a, b) => countriesData[b].area - countriesData[a].area)
@@ -142,16 +120,14 @@ const tooggleForm = (bollean) => {
             option.value = countriesData[code].name.common;
             countriesList.appendChild(option);
         });
-
     tooggleForm(false); // делаем раздизейбл по окончании запроса
-
     form.addEventListener('submit', (e) => {
         e.preventDefault();
-
         // функция для поиска нужного ключа cca3
-        const getCountryCode = (contryFullName) =>
-            countryCodes.find((cca3) => contryFullName === countriesData[cca3].name.common);
-
+        const getCountryCode = (contryFullName) => {
+            const code = countryCodes.find((cca3) => contryFullName === countriesData[cca3].name.common);
+            return code || '';
+        };
         // ниже подобие примитивной валидации, не дающей сделать запрос по пустому полю
         if (!fromCountry.value) {
             output.textContent = 'Поле "From" должно быть заполнено:)';
@@ -162,13 +138,9 @@ const tooggleForm = (bollean) => {
         } else {
             (async () => {
                 tooggleForm(true);
-
                 output.textContent = 'Ищем оптимальные маршруты, подождите пожалуйста!';
-
                 const [from, to] = [getCountryCode(fromCountry.value), getCountryCode(toCountry.value)];
-
                 const resultOutput = await search(from, to); // вызов главной функции
-
                 if (resultOutput.requestData.error) {
                     output.textContent = `Произошла ошибка при обращении к серверу ${resultOutput.message}`;
                 } else if (resultOutput.overLimit) {
@@ -185,7 +157,6 @@ const tooggleForm = (bollean) => {
                 } else {
                     output.textContent = resultOutput.message;
                 }
-
                 tooggleForm(false);
             })();
         }
