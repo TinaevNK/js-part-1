@@ -1,5 +1,6 @@
+const URL = 'https://restcountries.com/v3.1';
+
 async function getData(url) {
-    // https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch
     const response = await fetch(url, {
         method: 'GET',
         headers: {
@@ -7,15 +8,98 @@ async function getData(url) {
         },
         redirect: 'follow',
     });
-    return response.json();
+
+    const result = await response.json();
+
+    if (response.ok) {
+        return result;
+    }
+
+    throw result;
 }
 
+// для преобразования базы в словарь вида caa3/данные страны. Используем для того, чтобы не бегать за странами на бэк
 async function loadCountriesData() {
-    const countries = await getData('https://restcountries.com/v3.1/all?fields=name&fields=cca3&fields=area');
+    const countries = await getData(`${URL}/all?fields=name&fields=cca3&fields=area`);
+
     return countries.reduce((result, country) => {
         result[country.cca3] = country;
         return result;
     }, {});
+}
+
+async function getBorders(code) {
+    const borders = await getData(`${URL}/alpha/${code}?fields=borders`);
+
+    return borders.borders;
+}
+
+// головная функция
+async function search(from, to) {
+    const searchData = {
+        resultPaths: [], // результат отработки нашей функции, его мы будем парсить в дальнейшем
+        overLimit: false, // если страны слишком далеко друг от друга - мы выведем в ответ информацию об этом
+        message: '',
+        requestData: { requestCounter: 0, error: false }, // счётчик запросов и флаг ошибки
+    };
+
+    const paths = [[from]];
+
+    for await (const path of paths) {
+        const rootPath = path.at(-1);
+        // если мы находим наш путь
+        if (rootPath === to) {
+            searchData.resultPaths.push(path);
+            // теперь поищем другие варианты, если они есть (тоже самое количество шагов)
+            const pathNextIndex = paths.indexOf(path) + 1;
+            if (paths[pathNextIndex]) {
+                for (let i = pathNextIndex; i < paths.length; i++) {
+                    if (paths[i].length === path.length) {
+                        if (paths[i].at(-1) === to) {
+                            searchData.resultPaths.push(paths[i]);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+            return searchData;
+        }
+        if (path.length > 10) {
+            searchData.overLimit = true;
+            searchData.message = 'Очень далеко... давай на самолёте?)';
+            return searchData;
+        }
+        let borders;
+
+        try {
+            borders = await getBorders(rootPath);
+        } catch (err) {
+            searchData.message = err.message;
+            searchData.requestData.error = true;
+            return searchData;
+        }
+
+        searchData.requestData.requestCounter += 1;
+
+        // фильтруем страны, чтобы не идти по кругу
+        const nextBorders = borders.filter((border) => {
+            for (let i = 0; i < paths.length; i++) {
+                if (paths[i].at(-1) === border && paths[i].length <= path.length) {
+                    return false;
+                }
+            }
+            return true;
+        });
+
+        nextBorders.forEach((border) => {
+            const newPath = path.concat(border);
+            paths.push(newPath); // вот тут спрятано увеличения стека, путём мутирования paths
+        });
+    }
+
+    searchData.message = 'К сожалению - ничего не нашлось :(';
+    return searchData;
 }
 
 const form = document.getElementById('form');
@@ -25,17 +109,33 @@ const countriesList = document.getElementById('countriesList');
 const submit = document.getElementById('submit');
 const output = document.getElementById('output');
 
+// функция для блокировки/разблокировке полей ввода и кнопки сабмита
+const tooggleForm = (bollean) => {
+    fromCountry.disabled = bollean;
+    toCountry.disabled = bollean;
+    submit.disabled = bollean;
+};
+
 (async () => {
-    fromCountry.disabled = true;
-    toCountry.disabled = true;
-    submit.disabled = true;
+    tooggleForm(true); // дизейблим кнопки во время запроса
 
     output.textContent = 'Loading…';
-    const countriesData = await loadCountriesData();
-    output.textContent = '';
+
+    let countriesData; // вынес в отдельные константы т.к. дальше по коду будет использоваться (т.е. нельзя в {})
+
+    try {
+        countriesData = await loadCountriesData();
+        output.textContent = '';
+    } catch (err) {
+        output.textContent = `Упс, произошла ошибка при обращении к серверу ${err.message}`;
+        return;
+    }
+
+    // немного поменял код, чтобы дважды не делать Object.keys, ключи ещё понадобятся
+    const countryCodes = Object.keys(countriesData);
 
     // Заполняем список стран для подсказки в инпутах
-    Object.keys(countriesData)
+    countryCodes
         .sort((a, b) => countriesData[b].area - countriesData[a].area)
         .forEach((code) => {
             const option = document.createElement('option');
@@ -43,14 +143,51 @@ const output = document.getElementById('output');
             countriesList.appendChild(option);
         });
 
-    fromCountry.disabled = false;
-    toCountry.disabled = false;
-    submit.disabled = false;
+    tooggleForm(false); // делаем раздизейбл по окончании запроса
 
-    form.addEventListener('submit', (event) => {
-        event.preventDefault();
-        // TODO: Вывести, откуда и куда едем, и что идёт расчёт.
-        // TODO: Рассчитать маршрут из одной страны в другую за минимум запросов.
-        // TODO: Вывести маршрут и общее количество запросов.
+    form.addEventListener('submit', (e) => {
+        e.preventDefault();
+
+        // функция для поиска нужного ключа cca3
+        const getCountryCode = (contryFullName) =>
+            countryCodes.find((cca3) => contryFullName === countriesData[cca3].name.common);
+
+        // ниже подобие примитивной валидации, не дающей сделать запрос по пустому полю
+        if (!fromCountry.value) {
+            output.textContent = 'Поле "From" должно быть заполнено:)';
+            fromCountry.focus();
+        } else if (!toCountry.value) {
+            output.textContent = 'Поле "To" должно быть заполнено:)';
+            toCountry.focus();
+        } else {
+            (async () => {
+                tooggleForm(true);
+
+                output.textContent = 'Ищем оптимальные маршруты, подождите пожалуйста!';
+
+                const [from, to] = [getCountryCode(fromCountry.value), getCountryCode(toCountry.value)];
+
+                const resultOutput = await search(from, to); // вызов главной функции
+
+                if (resultOutput.requestData.error) {
+                    output.textContent = `Произошла ошибка при обращении к серверу ${resultOutput.message}`;
+                } else if (resultOutput.overLimit) {
+                    output.textContent = resultOutput.message;
+                } else if (resultOutput.resultPaths.length) {
+                    output.textContent = '';
+                    resultOutput.resultPaths.forEach((path) => {
+                        path.forEach((country, i) => {
+                            path[i] = countriesData[country].name.common;
+                        });
+                        output.innerHTML += `${path.join(' → ')}<br/>`;
+                    });
+                    output.innerHTML += `Количество запросов к API: ${resultOutput.requestData.requestCounter}`;
+                } else {
+                    output.textContent = resultOutput.message;
+                }
+
+                tooggleForm(false);
+            })();
+        }
     });
 })();
