@@ -1,7 +1,8 @@
 module.exports = {
     root: true,
     extends: ['prettier'],
-    plugins: ['prettier'],
+    plugins: ['@typescript-eslint', 'prettier'],
+    parser: '@typescript-eslint/parser',
     env: {
         browser: true,
         node: true,
