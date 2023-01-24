@@ -101,9 +101,11 @@ async function search(from: string, to: string): Promise<SearchResult> {
 
         try {
             borders = await getBorders(rootPath);
-        } catch (err: any) {
-            searchData.message = err.message;
-            searchData.requestData.error = true;
+        } catch (err: unknown) {
+            if (err instanceof Error) {
+                searchData.message = err.message;
+                searchData.requestData.error = true;
+            }
             return searchData;
         }
 
@@ -153,8 +155,10 @@ const tooggleForm = (bollean: boolean): void => {
     try {
         countriesData = await loadCountriesData();
         output.textContent = '';
-    } catch (err: any) {
-        output.textContent = `Упс, произошла ошибка при обращении к серверу ${err.message}`;
+    } catch (err: unknown) {
+        if (err instanceof Error) {
+            output.textContent = `Упс, произошла ошибка при обращении к серверу ${err.message}`;
+        }
         return;
     }
 
